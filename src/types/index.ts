@@ -43,3 +43,18 @@ export interface SegmentStats {
   avgSlope: number // percent
   maxSlope: number // percent
 }
+
+export interface MatchedSegment {
+  id: string
+  trackAId: string
+  trackBId: string
+  trackAName: string
+  trackBName: string
+  points: Array<{ lat: number; lng: number }>
+  distance: number // km
+}
+
+export interface MatchingSettings {
+  enabled: boolean
+  delta: number // meters
+}

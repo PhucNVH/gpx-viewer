@@ -6,6 +6,7 @@ import { FitBounds } from './FitBounds'
 import { TrackLayer } from './TrackLayer'
 import { PositionMarker } from './PositionMarker'
 import { SegmentOverlay } from './SegmentOverlay'
+import { MatchOverlay } from './MatchOverlay'
 import 'leaflet/dist/leaflet.css'
 
 export function MapView() {
@@ -29,6 +30,7 @@ export function MapView() {
         <TrackLayer key={track.id} track={track} />
       ))}
       
+      <MatchOverlay />
       <SegmentOverlay />
       <PositionMarker />
       <FitBounds tracks={visibleTracks} />

@@ -3,6 +3,8 @@ import { FileUpload } from './components/FileUpload'
 import { MapView } from './components/MapView'
 import { TrackList } from './components/TrackList'
 import { ElevationChart } from './components/ElevationChart'
+import { MatchControls } from './components/MatchControls'
+import { MatchSummary } from './components/MatchSummary'
 
 function App() {
   const [sidebarWidth, setSidebarWidth] = useState(320)
@@ -226,6 +228,16 @@ function App() {
           {/* Track List */}
           <section>
             <TrackList />
+          </section>
+
+          {/* Segment Matching Controls */}
+          <section>
+            <MatchControls />
+          </section>
+
+          {/* Matching Summary */}
+          <section>
+            <MatchSummary />
           </section>
         </div>
 

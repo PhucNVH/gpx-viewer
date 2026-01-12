@@ -1,6 +1,8 @@
 import { create } from 'zustand'
-import type { GpxTrack, HoveredPoint, SelectedPoint, SegmentStats, ElevationPoint } from '../types'
-import { resetColorIndex } from '../utils/colorGenerator'
+import { persist } from 'zustand/middleware'
+import type { GpxTrack, HoveredPoint, SelectedPoint, SegmentStats, ElevationPoint, MatchingSettings, MatchedSegment } from '../types'
+import { resetColorIndex, setColorIndex } from '../utils/colorGenerator'
+import { findMatchingSegments } from '../utils/segmentMatcher'
 
 // Segment data stored per track
 interface TrackSegment {
@@ -15,6 +17,8 @@ interface TrackState {
   // Segment selection - stored per track ID
   selectionMode: boolean
   trackSegments: Record<string, TrackSegment>
+  // Matching settings
+  matchingSettings: MatchingSettings
   // Actions
   addTracks: (tracks: GpxTrack[]) => void
   removeTrack: (id: string) => void
@@ -25,14 +29,22 @@ interface TrackState {
   setSegmentPoint: (point: SelectedPoint) => void
   clearSegment: (trackId?: string) => void
   clearAllTracks: () => void
+  setMatchingEnabled: (enabled: boolean) => void
+  setMatchingDelta: (delta: number) => void
 }
 
-export const useTrackStore = create<TrackState>((set, get) => ({
+export const useTrackStore = create<TrackState>()(
+  persist(
+    (set, get) => ({
   tracks: [],
   selectedTrackId: null,
   hoveredPoint: null,
   selectionMode: false,
   trackSegments: {},
+  matchingSettings: {
+    enabled: false,
+    delta: 300, // Default 30 meters
+  },
   
   addTracks: (newTracks) => {
     set((state) => {
@@ -132,9 +144,40 @@ export const useTrackStore = create<TrackState>((set, get) => ({
       hoveredPoint: null,
       selectionMode: false,
       trackSegments: {},
+      matchingSettings: { enabled: false, delta: 30 },
     })
   },
-}))
+  
+  setMatchingEnabled: (enabled) => {
+    set((state) => ({
+      matchingSettings: { ...state.matchingSettings, enabled },
+    }))
+  },
+  
+  setMatchingDelta: (delta) => {
+    set((state) => ({
+      matchingSettings: { ...state.matchingSettings, delta },
+    }))
+  },
+    }),
+    {
+      name: 'gpx-tracks-storage',
+      // Only persist essential data, not UI state like hoveredPoint
+      partialize: (state) => ({
+        tracks: state.tracks,
+        selectedTrackId: state.selectedTrackId,
+        trackSegments: state.trackSegments,
+        matchingSettings: state.matchingSettings,
+      }),
+      // Restore color index based on loaded tracks
+      onRehydrateStorage: () => (state) => {
+        if (state?.tracks.length) {
+          setColorIndex(state.tracks.length)
+        }
+      },
+    }
+  )
+)
 
 // Selector for the currently selected track
 export const useSelectedTrack = () => {
@@ -154,6 +197,24 @@ export const useCurrentSegment = () => {
   const trackSegments = useTrackStore((state) => state.trackSegments)
   if (!selectedTrackId) return { start: null, end: null }
   return trackSegments[selectedTrackId] || { start: null, end: null }
+}
+
+// Selector for matching settings
+export const useMatchingSettings = () => {
+  return useTrackStore((state) => state.matchingSettings)
+}
+
+// Selector for matched segments - computes when enabled
+export const useMatchedSegments = (): MatchedSegment[] => {
+  const tracks = useTrackStore((state) => state.tracks)
+  const matchingSettings = useTrackStore((state) => state.matchingSettings)
+  
+  if (!matchingSettings.enabled) return []
+  
+  const visibleTracks = tracks.filter(t => t.visible)
+  if (visibleTracks.length < 2) return []
+  
+  return findMatchingSegments(tracks, matchingSettings.delta)
 }
 
 // Calculate segment statistics

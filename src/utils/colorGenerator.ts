@@ -32,3 +32,10 @@ export function getNextColor(): string {
 export function resetColorIndex(): void {
   colorIndex = 0
 }
+
+/**
+ * Set the color index to a specific value (useful for restoring state)
+ */
+export function setColorIndex(index: number): void {
+  colorIndex = index
+}
