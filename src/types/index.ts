@@ -52,6 +52,13 @@ export interface MatchedSegment {
   trackBName: string
   points: Array<{ lat: number; lng: number }>
   distance: number // km
+  direction: number // bearing in degrees (0-360, 0 = North, 90 = East)
+  directionLabel: string // e.g., "N", "NE", "E", etc.
+  // Track indices for elevation chart display
+  startIndexA: number
+  endIndexA: number
+  startIndexB: number
+  endIndexB: number
 }
 
 export interface MatchingSettings {

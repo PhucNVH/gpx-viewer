@@ -1,8 +1,9 @@
-import { useTrackStore, useMatchingSettings, useVisibleTracks } from '../store/useTrackStore'
+import { useTrackStore, useMatchingSettings, useVisibleTracks, useMatchingLoading } from '../store/useTrackStore'
 
 export function MatchControls() {
   const visibleTracks = useVisibleTracks()
   const matchingSettings = useMatchingSettings()
+  const isLoading = useMatchingLoading()
   const setMatchingEnabled = useTrackStore((state) => state.setMatchingEnabled)
   const setMatchingDelta = useTrackStore((state) => state.setMatchingDelta)
   
@@ -14,7 +15,12 @@ export function MatchControls() {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-surface-300">Segment Matching</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium text-surface-300">Segment Matching</h3>
+          {isLoading && matchingSettings.enabled && (
+            <div className="w-3 h-3 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
+          )}
+        </div>
         <label className="relative inline-flex items-center cursor-pointer">
           <input
             type="checkbox"
