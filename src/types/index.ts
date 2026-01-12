@@ -16,6 +16,20 @@ export interface GpxTrack {
   elevation: ElevationPoint[]
   visible: boolean
   color: string
+  /** UUID for retrieving the GPX file from MinIO storage */
+  storageId: string
+}
+
+/**
+ * Minimal track metadata stored in localStorage
+ * The actual GPX data is retrieved from MinIO using storageId
+ */
+export interface StoredTrackMeta {
+  id: string
+  name: string
+  storageId: string
+  visible: boolean
+  color: string
 }
 
 export interface HoveredPoint {

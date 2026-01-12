@@ -14,9 +14,21 @@ interface TrackPointData {
 
 /**
  * Parse a GPX file and return a GpxTrack object
+ * @param file - The GPX file to parse
+ * @param storageId - Optional storage ID (UUID) from MinIO. If not provided, generates one.
  */
-export async function parseGpxFile(file: File): Promise<GpxTrack> {
+export async function parseGpxFile(file: File, storageId?: string): Promise<GpxTrack> {
   const text = await file.text()
+  return parseGpxContent(text, file.name, storageId)
+}
+
+/**
+ * Parse GPX content string and return a GpxTrack object
+ * @param text - The GPX file content as string
+ * @param fileName - Original file name (used for track name fallback)
+ * @param storageId - Optional storage ID (UUID) from MinIO. If not provided, generates one.
+ */
+export function parseGpxContent(text: string, fileName: string, storageId?: string): GpxTrack {
   const parser = new DOMParser()
   const doc = parser.parseFromString(text, 'application/xml')
   
@@ -31,7 +43,7 @@ export async function parseGpxFile(file: File): Promise<GpxTrack> {
   
   // Extract track name from GPX metadata or file name
   const nameElement = doc.querySelector('trk > name') || doc.querySelector('metadata > name')
-  const trackName = nameElement?.textContent || file.name.replace(/\.gpx$/i, '')
+  const trackName = nameElement?.textContent || fileName.replace(/\.gpx$/i, '')
   
   // Extract elevation data with HR and cadence from raw XML
   const elevation = extractTrackPointData(doc)
@@ -43,6 +55,7 @@ export async function parseGpxFile(file: File): Promise<GpxTrack> {
     elevation,
     visible: true,
     color: getNextColor(),
+    storageId: storageId || crypto.randomUUID(),
   }
 }
 

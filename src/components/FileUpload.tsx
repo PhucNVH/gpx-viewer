@@ -1,10 +1,13 @@
 import { useCallback, useState } from 'react'
 import { useTrackStore } from '../store/useTrackStore'
-import { parseGpxFiles } from '../utils/gpxParser'
+import { parseGpxContent } from '../utils/gpxParser'
+import { uploadGpxFile, generateStorageId } from '../services/storageService'
+import type { GpxTrack } from '../types'
 
 export function FileUpload() {
   const [isDragging, setIsDragging] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<string>('')
   const addTracks = useTrackStore((state) => state.addTracks)
 
   const handleFiles = useCallback(async (files: FileList | File[]) => {
@@ -15,16 +18,37 @@ export function FileUpload() {
     if (gpxFiles.length === 0) return
     
     setIsLoading(true)
-    try {
-      const tracks = await parseGpxFiles(gpxFiles)
-      if (tracks.length > 0) {
-        addTracks(tracks)
+    const tracks: GpxTrack[] = []
+    
+    for (let i = 0; i < gpxFiles.length; i++) {
+      const file = gpxFiles[i]
+      setUploadStatus(`Uploading ${i + 1}/${gpxFiles.length}: ${file.name}`)
+      
+      try {
+        // Read file content
+        const content = await file.text()
+        
+        // Generate UUID and upload to MinIO
+        const storageId = generateStorageId()
+        await uploadGpxFile(storageId, content)
+        
+        // Parse GPX content with the storage ID
+        const track = parseGpxContent(content, file.name, storageId)
+        tracks.push(track)
+        
+        console.log(`[Upload] Uploaded ${file.name} as ${storageId}`)
+      } catch (error) {
+        console.error(`Failed to upload GPX file ${file.name}:`, error)
+        // Try to continue with remaining files
       }
-    } catch (error) {
-      console.error('Failed to parse GPX files:', error)
-    } finally {
-      setIsLoading(false)
     }
+    
+    if (tracks.length > 0) {
+      addTracks(tracks)
+    }
+    
+    setIsLoading(false)
+    setUploadStatus('')
   }, [addTracks])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -93,9 +117,14 @@ export function FileUpload() {
         </div>
         
         {isLoading ? (
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 border-2 border-accent-400 border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-surface-300">Processing...</span>
+          <div className="flex flex-col items-center gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-accent-400 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm text-surface-300">Uploading to storage...</span>
+            </div>
+            {uploadStatus && (
+              <span className="text-xs text-surface-500">{uploadStatus}</span>
+            )}
           </div>
         ) : (
           <>

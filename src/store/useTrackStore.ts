@@ -12,9 +12,12 @@ import type {
   ElevationPoint,
   MatchingSettings,
   MatchedSegment,
+  StoredTrackMeta,
 } from "../types";
 import { resetColorIndex, setColorIndex } from "../utils/colorGenerator";
 import { calculateMatchingSegmentsAsync } from "../hooks/useSegmentMatcherWorker";
+import { downloadGpxFile, deleteGpxFile } from "../services/storageService";
+import { parseGpxContent } from "../utils/gpxParser";
 
 // Segment data stored per track
 interface TrackSegment {
@@ -26,40 +29,130 @@ interface TrackSegment {
 let matchingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const MATCHING_DEBOUNCE_MS = 150; // Wait 150ms after last change before recalculating
 
+// Track loading state for MinIO fetches
+let isLoadingFromMinIO = false;
+
+/**
+ * Load track data from MinIO using stored metadata
+ * This runs asynchronously after store rehydration
+ */
+async function loadTracksFromMinIO(
+  trackMetas: StoredTrackMeta[],
+  selectedTrackId: string | null
+) {
+  if (isLoadingFromMinIO) return;
+  isLoadingFromMinIO = true;
+
+  const loadedTracks: GpxTrack[] = [];
+  const failedTracks: string[] = [];
+
+  for (const meta of trackMetas) {
+    try {
+      console.log(`[Storage] Loading track "${meta.name}" from MinIO...`);
+      const gpxContent = await downloadGpxFile(meta.storageId);
+
+      // Parse the GPX content
+      const track = parseGpxContent(gpxContent, meta.name, meta.storageId);
+
+      // Restore metadata from stored values
+      loadedTracks.push({
+        ...track,
+        id: meta.id,
+        name: meta.name,
+        visible: meta.visible,
+        color: meta.color,
+        storageId: meta.storageId,
+      });
+
+      console.log(`[Storage] Loaded track "${meta.name}"`);
+    } catch (error) {
+      console.error(
+        `[Storage] Failed to load track "${meta.name}" (${meta.storageId}):`,
+        error
+      );
+      failedTracks.push(meta.name);
+    }
+  }
+
+  // Update store with loaded tracks
+  if (loadedTracks.length > 0) {
+    // Determine selected track
+    const validSelectedId =
+      selectedTrackId && loadedTracks.some((t) => t.id === selectedTrackId)
+        ? selectedTrackId
+        : loadedTracks[0]?.id ?? null;
+
+    useTrackStore.setState({
+      tracks: loadedTracks,
+      selectedTrackId: validSelectedId,
+    });
+  }
+
+  if (failedTracks.length > 0) {
+    console.warn(
+      `[Storage] Failed to load ${
+        failedTracks.length
+      } track(s): ${failedTracks.join(", ")}`
+    );
+  }
+
+  console.log(
+    `[Storage] Finished loading ${loadedTracks.length} track(s) from MinIO`
+  );
+  isLoadingFromMinIO = false;
+}
+
 // Custom storage that handles quota errors gracefully
 const safeLocalStorage: StateStorage = {
   getItem: (name: string): string | null => {
     try {
-      return localStorage.getItem(name);
+      const data = localStorage.getItem(name);
+      if (data) {
+        console.log(
+          `[Storage] Loaded ${(data.length / 1024).toFixed(
+            1
+          )}KB from localStorage`
+        );
+      }
+      return data;
     } catch (e) {
-      console.warn("Failed to read from localStorage:", e);
+      console.warn("[Storage] Failed to read from localStorage:", e);
       return null;
     }
   },
   setItem: (name: string, value: string): void => {
+    const sizeKB = (value.length / 1024).toFixed(1);
+    console.log(`[Storage] Saving ${sizeKB}KB to localStorage...`);
+
     try {
       localStorage.setItem(name, value);
+      console.log(`[Storage] Successfully saved ${sizeKB}KB`);
     } catch (e) {
       // Quota exceeded or other storage error
-      console.warn(
-        "Failed to save to localStorage (quota may be exceeded):",
+      console.error(
+        `[Storage] Failed to save ${sizeKB}KB (quota may be exceeded):`,
         e
       );
       // Try to clear old data and retry once
       try {
         localStorage.removeItem(name);
         localStorage.setItem(name, value);
-      } catch {
-        // Give up silently - data won't be persisted
-        console.warn("Storage quota exceeded. Track data will not be saved.");
+        console.log(`[Storage] Successfully saved after clearing old data`);
+      } catch (retryError) {
+        // Give up - data won't be persisted
+        console.error(
+          "[Storage] Storage quota exceeded. Track data will not be saved.",
+          retryError
+        );
       }
     }
   },
   removeItem: (name: string): void => {
     try {
       localStorage.removeItem(name);
+      console.log("[Storage] Removed data from localStorage");
     } catch (e) {
-      console.warn("Failed to remove from localStorage:", e);
+      console.warn("[Storage] Failed to remove from localStorage:", e);
     }
   },
 };
@@ -165,6 +258,10 @@ export const useTrackStore = create<TrackState>()(
       },
 
       removeTrack: (id) => {
+        // Get the track's storageId before removing
+        const track = get().tracks.find((t) => t.id === id);
+        const storageId = track?.storageId;
+
         set((state) => {
           const tracks = state.tracks.filter((t) => t.id !== id);
           const selectedTrackId =
@@ -175,6 +272,17 @@ export const useTrackStore = create<TrackState>()(
           const { [id]: _, ...remainingSegments } = state.trackSegments;
           return { tracks, selectedTrackId, trackSegments: remainingSegments };
         });
+
+        // Delete from MinIO (fire and forget, don't block UI)
+        if (storageId) {
+          deleteGpxFile(storageId).catch((error) => {
+            console.error(
+              `[Storage] Failed to delete track from MinIO (${storageId}):`,
+              error
+            );
+          });
+        }
+
         // Recalculate matching if enabled
         scheduleMatchingRecalculation(get, set);
       },
@@ -315,40 +423,106 @@ export const useTrackStore = create<TrackState>()(
     }),
     {
       name: "gpx-tracks-storage",
+      version: 2, // Incremented for MinIO storage migration
       storage: createJSONStorage(() => safeLocalStorage),
-      // Only persist essential data, not UI state or computed values
-      // Note: matchingSettings.enabled not persisted - matching starts disabled on reload
-      // This prevents localStorage quota issues with large track data
+      // Only persist track metadata - GPX data is stored in MinIO
       partialize: (state) => ({
-        tracks: state.tracks,
+        // Store only metadata (storageId points to MinIO file)
+        trackMetas: state.tracks.map(
+          (track): StoredTrackMeta => ({
+            id: track.id,
+            name: track.name,
+            storageId: track.storageId,
+            visible: track.visible,
+            color: track.color,
+          })
+        ),
         selectedTrackId: state.selectedTrackId,
         trackSegments: state.trackSegments,
         // Only persist delta, not enabled state (matching always starts off)
         matchingDelta: state.matchingSettings.delta,
       }),
-      // Restore color index based on loaded tracks
-      onRehydrateStorage: () => (state, error) => {
-        if (error) return;
-        if (state?.tracks.length) {
-          setColorIndex(state.tracks.length);
+      // Restore color index and load tracks from MinIO on rehydrate
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) {
+          console.warn("Failed to rehydrate store:", error);
+          return;
         }
+        // Note: Actual track loading happens in merge function
+        // This callback runs after merge completes
       },
-      // Merge persisted state with defaults
+      // Merge persisted state with defaults, and schedule MinIO data loading
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<TrackState> & {
           matchingDelta?: number;
+          trackMetas?: StoredTrackMeta[];
+          // Legacy: tracks field for backward compatibility
+          tracks?: Array<
+            Omit<GpxTrack, "geojson"> & {
+              geojson?: GpxTrack["geojson"];
+              storageId?: string;
+            }
+          >;
         };
+
+        // Get track metadata from new format or legacy tracks
+        const trackMetas: StoredTrackMeta[] =
+          persisted.trackMetas ??
+          persisted.tracks?.map((t) => ({
+            id: t.id,
+            name: t.name,
+            storageId: t.storageId || crypto.randomUUID(),
+            visible: t.visible,
+            color: t.color,
+          })) ??
+          [];
+
+        const trackIds = new Set(trackMetas.map((t) => t.id));
+
+        // Validate selectedTrackId
+        let selectedTrackId =
+          persisted.selectedTrackId ?? currentState.selectedTrackId;
+        if (selectedTrackId && !trackIds.has(selectedTrackId)) {
+          selectedTrackId = trackMetas[0]?.id ?? null;
+        }
+
+        // Clean up stale trackSegments
+        const persistedSegments =
+          persisted.trackSegments ?? currentState.trackSegments;
+        const trackSegments: Record<string, TrackSegment> = {};
+        for (const [trackId, segment] of Object.entries(persistedSegments)) {
+          if (trackIds.has(trackId)) {
+            trackSegments[trackId] = segment;
+          }
+        }
+
+        // Set color index based on track count
+        if (trackMetas.length > 0) {
+          setColorIndex(trackMetas.length);
+        }
+
+        console.log(
+          `[Storage] Found ${trackMetas.length} track(s) metadata. Loading from MinIO...`
+        );
+
+        // Schedule async loading of GPX data from MinIO
+        // This runs after initial state is set
+        if (trackMetas.length > 0) {
+          loadTracksFromMinIO(trackMetas, selectedTrackId);
+        }
+
         return {
           ...currentState,
-          tracks: persisted.tracks ?? currentState.tracks,
-          selectedTrackId:
-            persisted.selectedTrackId ?? currentState.selectedTrackId,
-          trackSegments: persisted.trackSegments ?? currentState.trackSegments,
+          tracks: [], // Start empty, will be populated by loadTracksFromMinIO
+          selectedTrackId: null, // Will be set after loading
+          trackSegments,
           matchingSettings: {
-            enabled: false, // Always start with matching disabled
+            enabled: false,
             delta:
               persisted.matchingDelta ?? currentState.matchingSettings.delta,
           },
+          // Store metadata for loading indicator
+          _pendingTrackMetas: trackMetas,
         };
       },
     }
@@ -402,46 +576,47 @@ export const useSelectedMatchedSegmentId = (): string | null => {
 
 // Selector for selected matched segment with full elevation data
 export interface MatchedSegmentElevationData {
-  segment: MatchedSegment
-  trackAElevation: ElevationPoint[]
-  trackBElevation: ElevationPoint[]
-  trackAColor: string
-  trackBColor: string
+  segment: MatchedSegment;
+  trackAElevation: ElevationPoint[];
+  trackBElevation: ElevationPoint[];
+  trackAColor: string;
+  trackBColor: string;
 }
 
-export const useSelectedMatchedSegmentData = (): MatchedSegmentElevationData | null => {
-  const tracks = useTrackStore((state) => state.tracks)
-  const matchedSegments = useTrackStore((state) => state.matchedSegments)
-  const selectedId = useTrackStore((state) => state.selectedMatchedSegmentId)
+export const useSelectedMatchedSegmentData =
+  (): MatchedSegmentElevationData | null => {
+    const tracks = useTrackStore((state) => state.tracks);
+    const matchedSegments = useTrackStore((state) => state.matchedSegments);
+    const selectedId = useTrackStore((state) => state.selectedMatchedSegmentId);
 
-  if (!selectedId) return null
+    if (!selectedId) return null;
 
-  const segment = matchedSegments.find((s) => s.id === selectedId)
-  if (!segment) return null
+    const segment = matchedSegments.find((s) => s.id === selectedId);
+    if (!segment) return null;
 
-  const trackA = tracks.find((t) => t.id === segment.trackAId)
-  const trackB = tracks.find((t) => t.id === segment.trackBId)
+    const trackA = tracks.find((t) => t.id === segment.trackAId);
+    const trackB = tracks.find((t) => t.id === segment.trackBId);
 
-  if (!trackA || !trackB) return null
+    if (!trackA || !trackB) return null;
 
-  // Extract elevation data for the segment range
-  const trackAElevation = trackA.elevation.slice(
-    segment.startIndexA,
-    segment.endIndexA + 1
-  )
-  const trackBElevation = trackB.elevation.slice(
-    segment.startIndexB,
-    segment.endIndexB + 1
-  )
+    // Extract elevation data for the segment range
+    const trackAElevation = trackA.elevation.slice(
+      segment.startIndexA,
+      segment.endIndexA + 1
+    );
+    const trackBElevation = trackB.elevation.slice(
+      segment.startIndexB,
+      segment.endIndexB + 1
+    );
 
-  return {
-    segment,
-    trackAElevation,
-    trackBElevation,
-    trackAColor: trackA.color,
-    trackBColor: trackB.color,
-  }
-}
+    return {
+      segment,
+      trackAElevation,
+      trackBElevation,
+      trackAColor: trackA.color,
+      trackBColor: trackB.color,
+    };
+  };
 
 // Calculate segment statistics
 export function calculateSegmentStats(

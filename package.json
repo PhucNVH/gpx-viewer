@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.966.0",
     "@tmcw/togeojson": "^5.8.1",
     "leaflet": "^1.9.4",
     "react": "^18.3.1",
