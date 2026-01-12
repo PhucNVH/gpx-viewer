@@ -1,0 +1,98 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  @apply bg-surface-950 text-surface-100 font-sans antialiased;
+}
+
+/* Leaflet overrides for dark theme */
+.leaflet-container {
+  background: #0f172a;
+  font-family: inherit;
+}
+
+.leaflet-control-zoom a {
+  @apply bg-surface-800 text-surface-100 border-surface-700;
+}
+
+.leaflet-control-zoom a:hover {
+  @apply bg-surface-700;
+}
+
+.leaflet-control-attribution {
+  @apply bg-surface-900/80 text-surface-400 text-xs;
+}
+
+.leaflet-control-attribution a {
+  @apply text-accent-400;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-surface-900;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-surface-600 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-surface-500;
+}
+
+/* Recharts tooltip dark theme */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  @apply bg-surface-800 border-surface-700 rounded-lg shadow-xl;
+}
+
+/* Leaflet position marker tooltip */
+.elevation-tooltip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  border: 1px solid rgba(51, 65, 85, 0.8) !important;
+  border-radius: 6px !important;
+  padding: 4px 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  white-space: nowrap !important;
+}
+
+.elevation-tooltip::before {
+  border-top-color: rgba(15, 23, 42, 0.95) !important;
+}
+
+.leaflet-tooltip-top:before {
+  border-top-color: rgba(15, 23, 42, 0.95) !important;
+}
+
+/* Segment marker tooltips */
+.segment-tooltip {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  border-radius: 6px !important;
+  padding: 4px 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  white-space: nowrap !important;
+  text-align: center !important;
+}
+
+.segment-tooltip::before {
+  border-top-color: rgba(255, 255, 255, 0.95) !important;
+}
