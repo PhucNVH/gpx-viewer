@@ -13,6 +13,7 @@ import type {
   MatchingSettings,
   MatchedSegment,
   StoredTrackMeta,
+  MatchingAlgorithm,
 } from "../types";
 import { resetColorIndex, setColorIndex } from "../utils/colorGenerator";
 import { calculateMatchingSegmentsAsync } from "../hooks/useSegmentMatcherWorker";
@@ -185,6 +186,7 @@ interface TrackState {
   setSelectedMatchedSegment: (id: string | null) => void;
   setMatchingEnabled: (enabled: boolean) => void;
   setMatchingDelta: (delta: number) => void;
+  setMatchingAlgorithm: (algorithm: MatchingAlgorithm) => void;
   recalculateMatching: () => void;
 }
 
@@ -218,6 +220,7 @@ function scheduleMatchingRecalculation(
     calculateMatchingSegmentsAsync(
       state.tracks,
       state.matchingSettings.delta,
+      state.matchingSettings.algorithm,
       (segments) => {
         // Only update if matching is still enabled
         if (get().matchingSettings.enabled) {
@@ -239,6 +242,7 @@ export const useTrackStore = create<TrackState>()(
       matchingSettings: {
         enabled: false,
         delta: 300, // Default 300 meters
+        algorithm: 'standard' as MatchingAlgorithm,
       },
       matchedSegments: [],
       isMatchingLoading: false,
@@ -374,7 +378,7 @@ export const useTrackStore = create<TrackState>()(
           hoveredPoint: null,
           selectionMode: false,
           trackSegments: {},
-          matchingSettings: { enabled: false, delta: 300 },
+          matchingSettings: { enabled: false, delta: 300, algorithm: 'standard' },
           matchedSegments: [],
           isMatchingLoading: false,
           highlightedSegmentId: null,
@@ -404,6 +408,14 @@ export const useTrackStore = create<TrackState>()(
           matchingSettings: { ...state.matchingSettings, delta },
         }));
         // Debounced recalculation when delta changes
+        scheduleMatchingRecalculation(get, set);
+      },
+
+      setMatchingAlgorithm: (algorithm) => {
+        set((state) => ({
+          matchingSettings: { ...state.matchingSettings, algorithm },
+        }));
+        // Recalculate when algorithm changes
         scheduleMatchingRecalculation(get, set);
       },
 
@@ -439,8 +451,9 @@ export const useTrackStore = create<TrackState>()(
         ),
         selectedTrackId: state.selectedTrackId,
         trackSegments: state.trackSegments,
-        // Only persist delta, not enabled state (matching always starts off)
+        // Only persist delta and algorithm, not enabled state (matching always starts off)
         matchingDelta: state.matchingSettings.delta,
+        matchingAlgorithm: state.matchingSettings.algorithm,
       }),
       // Restore color index and load tracks from MinIO on rehydrate
       onRehydrateStorage: () => (_state, error) => {
@@ -455,6 +468,7 @@ export const useTrackStore = create<TrackState>()(
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<TrackState> & {
           matchingDelta?: number;
+          matchingAlgorithm?: MatchingAlgorithm;
           trackMetas?: StoredTrackMeta[];
           // Legacy: tracks field for backward compatibility
           tracks?: Array<
@@ -520,6 +534,8 @@ export const useTrackStore = create<TrackState>()(
             enabled: false,
             delta:
               persisted.matchingDelta ?? currentState.matchingSettings.delta,
+            algorithm:
+              persisted.matchingAlgorithm ?? currentState.matchingSettings.algorithm,
           },
           // Store metadata for loading indicator
           _pendingTrackMetas: trackMetas,

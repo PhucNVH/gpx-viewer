@@ -1,14 +1,19 @@
 /// <reference lib="webworker" />
 
-import type { GpxTrack, MatchedSegment, ElevationPoint } from "../types";
+import type { GpxTrack, MatchedSegment, ElevationPoint, MatchingAlgorithm } from "../types";
 
 // Configuration constants
 const MIN_SEGMENT_POINTS = 8; // Reduced for better coverage
 const MIN_SEGMENT_DISTANCE_KM = 0.08; // Minimum 80m
-const POINT_SAMPLE_RATE = 3; // Better accuracy
+const POINT_SAMPLE_RATE = 3; // Standard algorithm sample rate
 const MAX_INDEX_GAP = 30; // Increased for better merging
 const MERGE_GAP_KM = 0.25; // 250m merge distance
 const OVERLAP_THRESHOLD = 0.2; // 20% overlap threshold
+
+// Adaptive sampling config
+const ADAPTIVE_MIN_RATE = 1; // Sample every point for short tracks
+const ADAPTIVE_MAX_RATE = 5; // Max skip for very long tracks
+const ADAPTIVE_TARGET_POINTS = 500; // Target number of sampled points
 
 // Haversine distance calculation
 function haversineDistance(
@@ -292,9 +297,13 @@ function perpendicularDistance(
 function groupIntoSegments(
   matchingPoints: MatchingPoint[],
   trackA: GpxTrack,
-  trackB: GpxTrack
+  trackB: GpxTrack,
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchedSegment[] {
   if (matchingPoints.length < MIN_SEGMENT_POINTS) return [];
+
+  // In bidirectional mode, allow opposite progressions
+  const allowOppositeProgression = algorithm === 'bidirectional';
 
   const rawSegments: MatchingPoint[][] = [];
   let currentSegmentPoints: MatchingPoint[] = [];
@@ -314,10 +323,13 @@ function groupIntoSegments(
       const isProgressingB = current.indexB > lastPoint.indexB;
       const sameProgression = isProgressingA === isProgressingB;
 
+      // In bidirectional mode, allow opposite progressions (e.g., uphill vs downhill)
+      const progressionOk = allowOppositeProgression || sameProgression;
+
       const isConsecutive =
         indexGapA <= MAX_INDEX_GAP &&
         indexGapB <= MAX_INDEX_GAP &&
-        sameProgression;
+        progressionOk;
 
       if (isConsecutive) {
         currentSegmentPoints.push(current);
@@ -337,8 +349,8 @@ function groupIntoSegments(
   // First pass: merge nearby sequential segments
   const nearbyMerged = mergeNearbySegments(rawSegments);
 
-  // Second pass: merge overlapping segments (more aggressive)
-  const fullyMerged = mergeOverlappingSegments(nearbyMerged);
+  // Second pass: merge overlapping segments (more aggressive in bidirectional mode)
+  const fullyMerged = mergeOverlappingSegments(nearbyMerged, algorithm);
 
   const segments: MatchedSegment[] = [];
 
@@ -423,11 +435,11 @@ function segmentsHaveSameDirection(
  */
 function segmentsOverlap(
   seg1: MatchingPoint[],
-  seg2: MatchingPoint[]
+  seg2: MatchingPoint[],
+  skipDirectionCheck: boolean = false
 ): boolean {
-  // First check if they're going the same direction
-  // Don't merge segments going opposite directions (uphill vs downhill)
-  if (!segmentsHaveSameDirection(seg1, seg2)) {
+  // Check direction unless in bidirectional mode
+  if (!skipDirectionCheck && !segmentsHaveSameDirection(seg1, seg2)) {
     return false;
   }
 
@@ -454,11 +466,11 @@ function segmentsOverlap(
  */
 function segmentsAreSpatiallyClose(
   seg1: MatchingPoint[],
-  seg2: MatchingPoint[]
+  seg2: MatchingPoint[],
+  skipDirectionCheck: boolean = false
 ): boolean {
-  // First check if they're going the same direction
-  // Don't merge segments going opposite directions (uphill vs downhill)
-  if (!segmentsHaveSameDirection(seg1, seg2)) {
+  // Check direction unless in bidirectional mode
+  if (!skipDirectionCheck && !segmentsHaveSameDirection(seg1, seg2)) {
     return false;
   }
 
@@ -526,9 +538,13 @@ function mergeSegmentPoints(
  * Advanced segment merging: merge overlapping and nearby segments
  */
 function mergeOverlappingSegments(
-  segments: MatchingPoint[][]
+  segments: MatchingPoint[][],
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchingPoint[][] {
   if (segments.length <= 1) return segments;
+
+  // In bidirectional mode, skip direction checks when merging
+  const skipDirectionCheck = algorithm === 'bidirectional';
 
   const sorted = [...segments].sort((a, b) => {
     const aStart = Math.min(...a.map((p) => p.indexA));
@@ -543,8 +559,8 @@ function mergeOverlappingSegments(
     const next = sorted[i];
 
     if (
-      segmentsOverlap(current, next) ||
-      segmentsAreSpatiallyClose(current, next)
+      segmentsOverlap(current, next, skipDirectionCheck) ||
+      segmentsAreSpatiallyClose(current, next, skipDirectionCheck)
     ) {
       current = mergeSegmentPoints(current, next);
     } else {
@@ -635,10 +651,23 @@ function createSegment(
   };
 }
 
+/**
+ * Calculate adaptive sample rate based on track length
+ * Shorter tracks get denser sampling, longer tracks get sparser
+ */
+function getAdaptiveSampleRate(trackLength: number): number {
+  if (trackLength <= ADAPTIVE_TARGET_POINTS) {
+    return ADAPTIVE_MIN_RATE; // Sample every point for short tracks
+  }
+  const rate = Math.ceil(trackLength / ADAPTIVE_TARGET_POINTS);
+  return Math.min(rate, ADAPTIVE_MAX_RATE);
+}
+
 function findMatchesBetweenTracks(
   trackA: GpxTrack,
   trackB: GpxTrack,
-  deltaMeters: number
+  deltaMeters: number,
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchedSegment[] {
   const pointsA = trackA.elevation;
   const pointsB = trackB.elevation;
@@ -655,7 +684,15 @@ function findMatchesBetweenTracks(
 
   const grid = getSpatialGrid(trackB.id, pointsB, Math.max(deltaKm * 2, 0.5));
 
-  for (let i = 0; i < pointsA.length; i += POINT_SAMPLE_RATE) {
+  // Determine sample rate based on algorithm
+  const sampleRate = algorithm === 'standard' 
+    ? POINT_SAMPLE_RATE 
+    : getAdaptiveSampleRate(pointsA.length);
+  
+  // Bidirectional mode skips bearing check entirely
+  const checkBearing = algorithm !== 'bidirectional';
+
+  for (let i = 0; i < pointsA.length; i += sampleRate) {
     const pointA = pointsA[i];
 
     const nearest = grid.findNearestWithinDistance(
@@ -668,10 +705,11 @@ function findMatchesBetweenTracks(
 
     const pointB = pointsB[nearest.index];
 
-    const prevIdxA = Math.max(0, i - POINT_SAMPLE_RATE);
-    const prevIdxB = Math.max(0, nearest.index - POINT_SAMPLE_RATE);
+    // Only check bearing if not in bidirectional mode
+    if (checkBearing && i > 0 && nearest.index > 0) {
+      const prevIdxA = Math.max(0, i - sampleRate);
+      const prevIdxB = Math.max(0, nearest.index - sampleRate);
 
-    if (i > 0 && nearest.index > 0) {
       const bearingA = calculateBearing(
         pointsA[prevIdxA].lat,
         pointsA[prevIdxA].lng,
@@ -698,12 +736,13 @@ function findMatchesBetweenTracks(
     });
   }
 
-  return groupIntoSegments(matchingPoints, trackA, trackB);
+  return groupIntoSegments(matchingPoints, trackA, trackB, algorithm);
 }
 
 function findMatchingSegments(
   tracks: GpxTrack[],
-  deltaMeters: number
+  deltaMeters: number,
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchedSegment[] {
   const visibleTracks = tracks.filter((t) => t.visible);
 
@@ -716,7 +755,8 @@ function findMatchingSegments(
       const segments = findMatchesBetweenTracks(
         visibleTracks[i],
         visibleTracks[j],
-        deltaMeters
+        deltaMeters,
+        algorithm
       );
       allSegments.push(...segments);
     }
@@ -726,8 +766,8 @@ function findMatchingSegments(
 }
 
 // Worker message handler
-self.onmessage = (e: MessageEvent<{ tracks: GpxTrack[]; delta: number }>) => {
-  const { tracks, delta } = e.data;
-  const segments = findMatchingSegments(tracks, delta);
+self.onmessage = (e: MessageEvent<{ tracks: GpxTrack[]; delta: number; algorithm: MatchingAlgorithm }>) => {
+  const { tracks, delta, algorithm } = e.data;
+  const segments = findMatchingSegments(tracks, delta, algorithm);
   self.postMessage(segments);
 };

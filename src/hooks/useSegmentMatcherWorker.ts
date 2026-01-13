@@ -1,4 +1,4 @@
-import type { GpxTrack, MatchedSegment } from '../types'
+import type { GpxTrack, MatchedSegment, MatchingAlgorithm } from '../types'
 
 // Create worker using Vite's worker import syntax
 let worker: Worker | null = null
@@ -41,6 +41,7 @@ function getWorker(): Worker | null {
 export function calculateMatchingSegmentsAsync(
   tracks: GpxTrack[],
   delta: number,
+  algorithm: MatchingAlgorithm,
   onComplete: (segments: MatchedSegment[]) => void
 ): void {
   const w = getWorker()
@@ -50,7 +51,7 @@ export function calculateMatchingSegmentsAsync(
     import('../utils/segmentMatcher').then(({ findMatchingSegments }) => {
       // Use requestIdleCallback if available for fallback
       const calculate = () => {
-        const segments = findMatchingSegments(tracks, delta)
+        const segments = findMatchingSegments(tracks, delta, algorithm)
         onComplete(segments)
       }
       
@@ -77,7 +78,7 @@ export function calculateMatchingSegmentsAsync(
     geojson: { type: 'FeatureCollection' as const, features: [] }, // Placeholder, not used in matching
   }))
   
-  w.postMessage({ tracks: tracksForWorker, delta })
+  w.postMessage({ tracks: tracksForWorker, delta, algorithm })
 }
 
 export function terminateWorker(): void {

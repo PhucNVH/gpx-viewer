@@ -1,14 +1,31 @@
-import type { GpxTrack, MatchedSegment, ElevationPoint } from '../types'
+import type { GpxTrack, MatchedSegment, ElevationPoint, MatchingAlgorithm } from '../types'
 import { haversineDistance } from './distance'
 import { getSpatialGrid } from './spatialIndex'
 
 // Configuration constants
 const MIN_SEGMENT_POINTS = 8 // Minimum points to form a valid segment (reduced for better coverage)
 const MIN_SEGMENT_DISTANCE_KM = 0.08 // Minimum 80m for a segment to be valid
-const POINT_SAMPLE_RATE = 3 // Sample every Nth point for better accuracy
+const POINT_SAMPLE_RATE = 3 // Standard algorithm sample rate
 const MAX_INDEX_GAP = 30 // Max allowed gap between consecutive matching points (increased)
 const MERGE_GAP_KM = 0.25 // Merge segments within 250m of each other (more aggressive)
 const OVERLAP_THRESHOLD = 0.2 // If 20% of points overlap, consider segments as duplicates
+
+// Adaptive sampling config
+const ADAPTIVE_MIN_RATE = 1 // Sample every point for short tracks
+const ADAPTIVE_MAX_RATE = 5 // Max skip for very long tracks
+const ADAPTIVE_TARGET_POINTS = 500 // Target number of sampled points
+
+/**
+ * Calculate adaptive sample rate based on track length
+ * Shorter tracks get denser sampling, longer tracks get sparser
+ */
+function getAdaptiveSampleRate(trackLength: number): number {
+  if (trackLength <= ADAPTIVE_TARGET_POINTS) {
+    return ADAPTIVE_MIN_RATE // Sample every point for short tracks
+  }
+  const rate = Math.ceil(trackLength / ADAPTIVE_TARGET_POINTS)
+  return Math.min(rate, ADAPTIVE_MAX_RATE)
+}
 
 /**
  * Calculate the bearing between two points in degrees (0-360)
@@ -195,9 +212,13 @@ function perpendicularDistance(
 function groupIntoSegments(
   matchingPoints: MatchingPoint[],
   trackA: GpxTrack,
-  trackB: GpxTrack
+  trackB: GpxTrack,
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchedSegment[] {
   if (matchingPoints.length < MIN_SEGMENT_POINTS) return []
+  
+  // In bidirectional mode, allow opposite progressions
+  const allowOppositeProgression = algorithm === 'bidirectional'
   
   const rawSegments: MatchingPoint[][] = []
   let currentSegmentPoints: MatchingPoint[] = []
@@ -219,10 +240,13 @@ function groupIntoSegments(
       const isProgressingB = current.indexB > lastPoint.indexB
       const sameProgression = isProgressingA === isProgressingB
       
+      // In bidirectional mode, allow opposite progressions (e.g., uphill vs downhill)
+      const progressionOk = allowOppositeProgression || sameProgression
+      
       const isConsecutive = 
         indexGapA <= MAX_INDEX_GAP &&
         indexGapB <= MAX_INDEX_GAP &&
-        sameProgression
+        progressionOk
       
       if (isConsecutive) {
         currentSegmentPoints.push(current)
@@ -244,8 +268,8 @@ function groupIntoSegments(
   // First pass: merge nearby sequential segments
   const nearbyMerged = mergeNearbySegments(rawSegments)
   
-  // Second pass: merge overlapping segments (more aggressive)
-  const fullyMerged = mergeOverlappingSegments(nearbyMerged)
+  // Second pass: merge overlapping segments (more aggressive in bidirectional mode)
+  const fullyMerged = mergeOverlappingSegments(nearbyMerged, algorithm)
   
   // Convert to MatchedSegment objects and filter by minimum distance
   const segments: MatchedSegment[] = []
@@ -333,10 +357,13 @@ function segmentsHaveSameDirection(
 /**
  * Check if two segments overlap significantly based on their index ranges
  */
-function segmentsOverlap(seg1: MatchingPoint[], seg2: MatchingPoint[]): boolean {
-  // First check if they're going the same direction
-  // Don't merge segments going opposite directions (uphill vs downhill)
-  if (!segmentsHaveSameDirection(seg1, seg2)) {
+function segmentsOverlap(
+  seg1: MatchingPoint[],
+  seg2: MatchingPoint[],
+  skipDirectionCheck: boolean = false
+): boolean {
+  // Check direction unless in bidirectional mode
+  if (!skipDirectionCheck && !segmentsHaveSameDirection(seg1, seg2)) {
     return false
   }
 
@@ -364,10 +391,13 @@ function segmentsOverlap(seg1: MatchingPoint[], seg2: MatchingPoint[]): boolean 
 /**
  * Check if two segments are spatially close AND going the same direction
  */
-function segmentsAreSpatiallyClose(seg1: MatchingPoint[], seg2: MatchingPoint[]): boolean {
-  // First check if they're going the same direction
-  // Don't merge segments going opposite directions (uphill vs downhill)
-  if (!segmentsHaveSameDirection(seg1, seg2)) {
+function segmentsAreSpatiallyClose(
+  seg1: MatchingPoint[],
+  seg2: MatchingPoint[],
+  skipDirectionCheck: boolean = false
+): boolean {
+  // Check direction unless in bidirectional mode
+  if (!skipDirectionCheck && !segmentsHaveSameDirection(seg1, seg2)) {
     return false
   }
 
@@ -423,8 +453,14 @@ function mergeSegmentPoints(seg1: MatchingPoint[], seg2: MatchingPoint[]): Match
 /**
  * Advanced segment merging: merge overlapping and nearby segments
  */
-function mergeOverlappingSegments(segments: MatchingPoint[][]): MatchingPoint[][] {
+function mergeOverlappingSegments(
+  segments: MatchingPoint[][],
+  algorithm: MatchingAlgorithm = 'standard'
+): MatchingPoint[][] {
   if (segments.length <= 1) return segments
+  
+  // In bidirectional mode, skip direction checks when merging
+  const skipDirectionCheck = algorithm === 'bidirectional'
   
   // Sort segments by their start index
   const sorted = [...segments].sort((a, b) => {
@@ -440,7 +476,10 @@ function mergeOverlappingSegments(segments: MatchingPoint[][]): MatchingPoint[][
     const next = sorted[i]
     
     // Check if segments should be merged
-    if (segmentsOverlap(current, next) || segmentsAreSpatiallyClose(current, next)) {
+    if (
+      segmentsOverlap(current, next, skipDirectionCheck) || 
+      segmentsAreSpatiallyClose(current, next, skipDirectionCheck)
+    ) {
       // Merge the segments
       current = mergeSegmentPoints(current, next)
     } else {
@@ -538,7 +577,8 @@ function createSegment(
 function findMatchesBetweenTracks(
   trackA: GpxTrack,
   trackB: GpxTrack,
-  deltaMeters: number
+  deltaMeters: number,
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchedSegment[] {
   const pointsA = trackA.elevation
   const pointsB = trackB.elevation
@@ -550,8 +590,16 @@ function findMatchesBetweenTracks(
   const deltaKm = deltaMeters / 1000
   const matchingPoints: MatchingPoint[] = []
   
+  // Determine sample rate based on algorithm
+  const sampleRate = algorithm === 'standard' 
+    ? POINT_SAMPLE_RATE 
+    : getAdaptiveSampleRate(pointsA.length)
+  
+  // Bidirectional mode skips bearing check entirely
+  const checkBearing = algorithm !== 'bidirectional'
+  
   // Sample points for efficiency
-  for (let i = 0; i < pointsA.length; i += POINT_SAMPLE_RATE) {
+  for (let i = 0; i < pointsA.length; i += sampleRate) {
     const pointA = pointsA[i]
     
     // Find nearest point in track B using spatial index
@@ -561,11 +609,11 @@ function findMatchesBetweenTracks(
     
     const pointB = pointsB[nearest.index]
     
-    // Check direction similarity using nearby points
-    const prevIdxA = Math.max(0, i - POINT_SAMPLE_RATE)
-    const prevIdxB = Math.max(0, nearest.index - POINT_SAMPLE_RATE)
-    
-    if (i > 0 && nearest.index > 0) {
+    // Only check bearing if not in bidirectional mode
+    if (checkBearing && i > 0 && nearest.index > 0) {
+      const prevIdxA = Math.max(0, i - sampleRate)
+      const prevIdxB = Math.max(0, nearest.index - sampleRate)
+      
       const bearingA = calculateBearing(
         pointsA[prevIdxA].lat, pointsA[prevIdxA].lng,
         pointA.lat, pointA.lng
@@ -588,18 +636,20 @@ function findMatchesBetweenTracks(
     })
   }
   
-  return groupIntoSegments(matchingPoints, trackA, trackB)
+  return groupIntoSegments(matchingPoints, trackA, trackB, algorithm)
 }
 
 /**
  * Find all matching segments across multiple tracks
  * @param tracks Array of GPX tracks to compare
  * @param deltaMeters Distance threshold in meters for matching
+ * @param algorithm Matching algorithm to use ('standard', 'adaptive', or 'bidirectional')
  * @returns Array of matched segments
  */
 export function findMatchingSegments(
   tracks: GpxTrack[],
-  deltaMeters: number
+  deltaMeters: number,
+  algorithm: MatchingAlgorithm = 'standard'
 ): MatchedSegment[] {
   const visibleTracks = tracks.filter(t => t.visible)
   
@@ -613,7 +663,8 @@ export function findMatchingSegments(
       const segments = findMatchesBetweenTracks(
         visibleTracks[i],
         visibleTracks[j],
-        deltaMeters
+        deltaMeters,
+        algorithm
       )
       allSegments.push(...segments)
     }

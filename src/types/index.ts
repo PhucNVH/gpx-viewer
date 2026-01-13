@@ -75,7 +75,10 @@ export interface MatchedSegment {
   endIndexB: number
 }
 
+export type MatchingAlgorithm = 'standard' | 'adaptive' | 'bidirectional'
+
 export interface MatchingSettings {
   enabled: boolean
   delta: number // meters
+  algorithm: MatchingAlgorithm
 }
