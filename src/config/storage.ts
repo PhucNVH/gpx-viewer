@@ -15,8 +15,9 @@
  */
 
 export const STORAGE_CONFIG = {
-  // MinIO S3 API endpoint (port 9002 maps to internal 9000)
-  endpoint: "http://100.114.13.148:9002",
+  // MinIO S3 API endpoint - proxied through nginx for HTTPS
+  // Use subdomain if using Option 2: "https://minio.gpx.orangepc.site"
+  endpoint: "https://minio.orangepc.site",
 
   // MinIO credentials
   accessKeyId: "minioadmin",
